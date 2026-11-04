@@ -96,6 +96,10 @@ impl Display for Error {
 
 pub type Result<T> = result::Result<T, Error>;
 
+/// VM tags of the blocks of guest RAM, alternating from one block to the next (the range that
+/// Mach leaves to applications, `VM_MEMORY_APPLICATION_SPECIFIC_1` and the next one).
+const BLOCK_TAGS: [libc::c_int; 2] = [240, 241];
+
 /// Maps fresh anonymous memory over the `len` bytes of guest memory at `guest_addr`, whose host
 /// address is `host_addr`, with one mmap() for each block of `RECLAIM_BLOCK_SIZE` guest physical
 /// addresses (the part of it that is in the range). XNU keeps these mappings apart, as the tests
@@ -114,6 +118,11 @@ unsafe fn map_fresh_blocks(host_addr: *mut u8, guest_addr: u64, len: u64) -> io:
     let mut addr = guest_addr;
     while addr < end {
         let block_end = (addr + 1).next_multiple_of(RECLAIM_BLOCK_SIZE).min(end);
+        // XNU merges an anonymous mapping into the one before it while the result stays under
+        // 128 KiB, if both have the same tag, and then replacing one block would leave the pages
+        // of that part of the merged object in memory. Neighbouring blocks get different tags so that
+        // each stays an object of its own.
+        let tag = BLOCK_TAGS[(addr / RECLAIM_BLOCK_SIZE % 2) as usize];
         // SAFETY: the block is within the range, which the caller vouches for.
         let ret = unsafe {
             libc::mmap(
@@ -121,7 +130,7 @@ unsafe fn map_fresh_blocks(host_addr: *mut u8, guest_addr: u64, len: u64) -> io:
                 (block_end - addr) as usize,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE,
-                -1,
+                tag << 24,
                 0,
             )
         };
@@ -968,28 +977,33 @@ mod tests {
 
     #[test]
     fn test_map_fresh_blocks_follows_guest_physical_blocks() {
-        // RAM that starts and ends in the middle of a block has a shorter first and last block.
-        let start = DRAM_MEM_START_EFI + MIB;
-        let (gm, ram) = ram_memory(start, 6 * MIB);
+        // RAM that starts and ends in the middle of a block has a shorter first and last block;
+        // with blocks of one page, every block is whole.
+        const BLOCK: u64 = RECLAIM_BLOCK_SIZE;
+        let part = if BLOCK > page_size() { BLOCK / 2 } else { BLOCK };
+        let start = DRAM_MEM_START_EFI + part;
+        let (gm, ram) = ram_memory(start, part + 2 * BLOCK + part);
         map_guest_ram_in_blocks(&gm, ram.clone()).unwrap();
         touch(&gm, ram, 1);
 
-        let entries: Vec<_> = [start, start + MIB, start + 3 * MIB, start + 5 * MIB]
-            .into_iter()
-            .map(|addr| {
+        let layout = [
+            (start, part),
+            (start + part, BLOCK),
+            (start + part + BLOCK, BLOCK),
+            (start + part + 2 * BLOCK, part),
+        ];
+        let entries: Vec<_> = layout
+            .iter()
+            .map(|&(addr, _)| {
                 let entry = vm_map::entry(host_addr(&gm, addr));
                 (entry.start, entry.size)
             })
             .collect();
-        assert_eq!(
-            entries,
-            [
-                (host_addr(&gm, start), MIB),
-                (host_addr(&gm, start + MIB), 2 * MIB),
-                (host_addr(&gm, start + 3 * MIB), 2 * MIB),
-                (host_addr(&gm, start + 5 * MIB), MIB),
-            ]
-        );
+        let expected: Vec<_> = layout
+            .iter()
+            .map(|&(addr, len)| (host_addr(&gm, addr), len))
+            .collect();
+        assert_eq!(entries, expected);
     }
 
     #[test]
@@ -1063,15 +1077,15 @@ mod tests {
         };
         let before = objects();
 
-        // Nothing, less than a block, a part of a block, a block that starts in the middle of
-        // one, and a run that ends in the middle of one.
+        // Nothing, less than a block, a block that starts in the middle of one, and a run that
+        // ends in the middle of one (4 KiB is less than a block of either size).
+        const BLOCK: u64 = RECLAIM_BLOCK_SIZE;
         for (addr, len) in [
             (ram.start + 2 * MIB, 0),
-            (ram.start + 2 * MIB, MIB),
-            (ram.start + 2 * MIB, RECLAIM_BLOCK_SIZE - page_size()),
-            (ram.start + 3 * MIB, RECLAIM_BLOCK_SIZE),
-            (ram.start + 2 * MIB, 3 * MIB),
-            (ram.start + 2 * MIB, 6 * MIB + page_size()),
+            (ram.start + 2 * MIB, 0x1000),
+            (ram.start + 2 * MIB, BLOCK - 0x1000),
+            (ram.start + 2 * MIB + 0x1000, BLOCK),
+            (ram.start + 2 * MIB, 2 * BLOCK + 0x1000),
         ] {
             assert!(
                 !vm.reclaim_memory(&gm, addr, len).unwrap(),

@@ -1996,16 +1996,16 @@ fn map_ram_in_blocks(
     match map(guest_mem, ram.clone()) {
         Ok(()) => {
             info!(
-                "guest RAM: mapped in {} blocks of {} MiB",
+                "guest RAM: mapped in {} blocks of {} KiB",
                 (ram.end - ram.start).div_ceil(RECLAIM_BLOCK_SIZE),
-                RECLAIM_BLOCK_SIZE >> 20
+                RECLAIM_BLOCK_SIZE >> 10
             );
             true
         }
         Err(e) => {
             warn!(
-                "guest RAM: couldn't map it in blocks of {} MiB: {e}",
-                RECLAIM_BLOCK_SIZE >> 20
+                "guest RAM: couldn't map it in blocks of {} KiB: {e}",
+                RECLAIM_BLOCK_SIZE >> 10
             );
             false
         }

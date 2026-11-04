@@ -188,9 +188,9 @@ fn reclaim(
     }
 }
 
-/// Smaller or unaligned reports are only madvise()d, so that the guest can't make the VMM split
-/// the stage-2 mapping of its RAM into small pieces, and because the VMM only replaces whole
-/// blocks. Linux reports 2 MiB blocks by default.
+/// Smaller or unaligned reports are only madvise()d, because the VMM only replaces whole blocks.
+/// Linux reports 2 MiB blocks by default, and smaller ones with
+/// `page_reporting.page_reporting_order`.
 fn reclaimable(addr: GuestAddress, len: usize) -> bool {
     let len = len as u64;
     len != 0 && addr.0.is_multiple_of(RECLAIM_BLOCK_SIZE) && len.is_multiple_of(RECLAIM_BLOCK_SIZE)
@@ -323,12 +323,14 @@ mod tests {
 
     #[test]
     fn test_reclaimable() {
+        const BLOCK: usize = RECLAIM_BLOCK_SIZE as usize;
+        assert!(reclaimable(GuestAddress(0x8000_0000), BLOCK));
         assert!(reclaimable(GuestAddress(0x8000_0000), 2 << 20));
-        assert!(reclaimable(GuestAddress(0x8020_0000), 4 << 20));
+        assert!(reclaimable(GuestAddress(0x8020_0000 + RECLAIM_BLOCK_SIZE), 2 * BLOCK));
         assert!(!reclaimable(GuestAddress(0x8000_0000), 0));
-        assert!(!reclaimable(GuestAddress(0x8000_0000), 1 << 20));
-        assert!(!reclaimable(GuestAddress(0x8000_0000), 3 << 20));
-        assert!(!reclaimable(GuestAddress(0x8010_0000), 2 << 20));
+        assert!(!reclaimable(GuestAddress(0x8000_0000), BLOCK / 4));
+        assert!(!reclaimable(GuestAddress(0x8000_0000), BLOCK + BLOCK / 4));
+        assert!(!reclaimable(GuestAddress(0x8000_1000), BLOCK));
     }
 
     #[test]
@@ -446,7 +448,7 @@ mod tests {
     fn test_small_reports_released_right_away() {
         let mem = guest_memory();
         let mut dev = TestDevice::new(&mem, Some(FreePageReportingMode::Replace));
-        dev.report(&[(0x40_0000, 1 << 20), (0x80_1000, 2 << 20)]);
+        dev.report(&[(0x40_0000, 0x1000), (0x80_1000, 2 << 20)]);
         assert!(dev.balloon.process_frq());
         assert_eq!(dev.used(), 1);
         assert!(dev.worker.try_recv().is_err());
