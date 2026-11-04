@@ -222,6 +222,35 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// Construct a Reader from guest memory buffers given as (address, length).
+    #[cfg(target_os = "macos")]
+    pub(crate) fn from_guest_buffers(
+        mem: &'a GuestMemoryMmap,
+        buffers: impl IntoIterator<Item = (GuestAddress, u32)>,
+    ) -> Result<Reader<'a>> {
+        let mut total_len: usize = 0;
+        let buffers = buffers
+            .into_iter()
+            .map(|(addr, len)| {
+                total_len = total_len
+                    .checked_add(len as usize)
+                    .ok_or(Error::DescriptorChainOverflow)?;
+                let region = mem.find_region(addr).ok_or(Error::FindMemoryRegion)?;
+                let offset = addr.checked_sub(region.start_addr().raw_value()).unwrap();
+                region
+                    .deref()
+                    .get_slice(offset.raw_value() as usize, len as usize)
+                    .map_err(Error::VolatileMemoryError)
+            })
+            .collect::<Result<VecDeque<VolatileSlice<'a>>>>()?;
+        Ok(Reader {
+            buffer: DescriptorChainConsumer {
+                buffers,
+                bytes_consumed: 0,
+            },
+        })
+    }
+
     /// Reads an object from the descriptor chain buffer.
     pub fn read_obj<T: ByteValued>(&mut self) -> io::Result<T> {
         let mut obj = MaybeUninit::<T>::uninit();

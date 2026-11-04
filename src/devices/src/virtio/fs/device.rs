@@ -109,6 +109,13 @@ impl Fs {
         defs::FS_DEV_ID
     }
 
+    /// The tag the guest mounts this filesystem by.
+    fn tag(&self) -> String {
+        let tag = &self.config.tag;
+        let end = tag.iter().position(|b| *b == 0).unwrap_or(tag.len());
+        String::from_utf8_lossy(&tag[..end]).into_owned()
+    }
+
     pub fn set_shm_region(&mut self, shm_region: VirtioShmRegion) {
         self.shm_region = Some(shm_region);
     }
@@ -291,6 +298,7 @@ impl VirtioDevice for Fs {
             self.exit_code.clone(),
             #[cfg(target_os = "macos")]
             self.map_sender.clone(),
+            self.tag(),
         )
         .map_err(|e| {
             error!("virtio_fs: failed to create worker: {}", e);

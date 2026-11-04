@@ -28,14 +28,14 @@ use super::server::Server;
 use super::virtual_entry::VirtualDirEntry;
 use crate::virtio::{InterruptTransport, VirtioShmRegion};
 
-enum FsServer {
+pub(crate) enum FsServer {
     ReadWrite(Server<AugmentFs<PassthroughFs>>),
     ReadOnly(Server<AugmentFs<PassthroughFsRo>>),
     Null(Server<AugmentFs<NullFs>>),
 }
 
 impl FsServer {
-    fn handle_message(
+    pub(crate) fn handle_message(
         &self,
         r: Reader,
         w: Writer,
@@ -83,7 +83,7 @@ pub struct FsWorker {
     mem: GuestMemoryMmap,
     allow_idmap: bool,
     shm_region: Option<VirtioShmRegion>,
-    server: FsServer,
+    server: Arc<FsServer>,
     stop_fd: EventFd,
     exit_code: Arc<AtomicI32>,
     #[cfg(target_os = "macos")]
@@ -105,6 +105,7 @@ impl FsWorker {
         stop_fd: EventFd,
         exit_code: Arc<AtomicI32>,
         #[cfg(target_os = "macos")] map_sender: Option<Sender<WorkerMessage>>,
+        tag: String,
     ) -> Result<Self, io::Error> {
         let inode_alloc = Arc::new(InodeAllocator::new());
         let server = match passthrough_cfg {
@@ -130,6 +131,18 @@ impl FsWorker {
                 virtual_entries,
             ))),
         };
+        let server = Arc::new(server);
+        // the same server also answers synchronous requests over the hypercall
+        super::hvc::register(super::hvc::HvcDevice {
+            tag,
+            server: server.clone(),
+            mem: mem.clone(),
+            allow_idmap,
+            shm_region: shm_region.clone(),
+            exit_code: exit_code.clone(),
+            #[cfg(target_os = "macos")]
+            map_sender: map_sender.clone(),
+        });
         Ok(Self {
             queues,
             queue_evts,

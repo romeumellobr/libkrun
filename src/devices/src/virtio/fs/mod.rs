@@ -3,6 +3,7 @@ mod device;
 #[allow(dead_code)]
 mod filesystem;
 pub mod fuse;
+pub mod hvc;
 mod inode_alloc;
 #[allow(dead_code)]
 mod multikey;

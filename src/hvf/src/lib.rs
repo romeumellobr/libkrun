@@ -22,7 +22,7 @@ use std::cell::Cell;
 
 use std::convert::TryInto;
 use std::fmt::{Display, Formatter};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
 use arch::ArchMemoryInfo;
@@ -340,6 +340,16 @@ impl HvfVm {
     }
 }
 
+/// Vendor-specific hypervisor calls (SMCCC owner 6, 0xC600_01xx) answered on the
+/// vCPU thread by a handler that a device registers: x0 is the function, x1 and
+/// x2 its arguments, and the return value goes back in x0.
+pub const VENDOR_HVC_FIRST: u64 = 0xC600_0100;
+pub const VENDOR_HVC_LAST: u64 = 0xC600_01FF;
+
+/// Handler for [`VENDOR_HVC_FIRST`]..=[`VENDOR_HVC_LAST`]. Without one, those
+/// calls return SMCCC NOT_SUPPORTED (-1) instead of stopping the VM.
+pub static VENDOR_HVC: OnceLock<fn(u64, u64, u64) -> u64> = OnceLock::new();
+
 #[derive(Debug)]
 pub enum VcpuExit<'a> {
     Breakpoint,
@@ -648,6 +658,18 @@ impl HvfVcpu<'_> {
                 let context_id = self.read_reg(hv_reg_t_HV_REG_X3)?;
                 self.write_reg(hv_reg_t_HV_REG_X0, 0)?;
                 Ok(VcpuExit::CpuOn(mpidr, entry, context_id))
+            }
+            func @ VENDOR_HVC_FIRST..=VENDOR_HVC_LAST => {
+                let ret = match VENDOR_HVC.get() {
+                    Some(handler) => handler(
+                        func,
+                        self.read_reg(hv_reg_t_HV_REG_X1)?,
+                        self.read_reg(hv_reg_t_HV_REG_X2)?,
+                    ),
+                    None => u64::MAX,
+                };
+                self.write_reg(hv_reg_t_HV_REG_X0, ret)?;
+                Ok(VcpuExit::PsciHandled)
             }
             val => panic!("Unexpected val={val}")
         }
