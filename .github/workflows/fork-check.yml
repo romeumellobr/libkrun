@@ -1,0 +1,55 @@
+name: Fork check (temporary, not for upstream)
+on:
+  push:
+    branches: ['ci/**']
+jobs:
+  linux:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+      - run: touch init/init
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy libkrun
+        run: cargo clippy --locked -p libkrun --features net,blk,ffi -- -D warnings
+      - name: clippy devices
+        run: cargo clippy --locked -p krun-devices --features net -- -D warnings
+      - name: test devices
+        run: cargo test --locked -p krun-devices --features net
+      - name: test libkrun
+        run: cargo test --locked -p libkrun --features net
+      - name: workspace tests
+        run: cargo test --locked
+      - name: install ffier-gen-c-header
+        run: cargo install --git https://github.com/mtjhrc/ffier.git --tag v0.3.0 --locked ffier-gen-c-header
+      - name: regenerate bindings
+        run: make gen-libkrun-bindings
+      - name: bindings diff
+        run: |
+          git diff bindings/libkrun-via-libc/ffier-krun.json include/libkrun.h | tee bindings.diff
+          git diff --exit-code bindings/libkrun-via-libc/ffier-krun.json include/libkrun.h
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings
+          path: |
+            bindings.diff
+            include/libkrun.h
+            bindings/libkrun-via-libc/ffier-krun.json
+  macos:
+    runs-on: macos-latest
+    env:
+      KRUN_INIT_BINARY_PATH: ${{ github.workspace }}/init/init
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+      - run: touch init/init
+      - name: clippy
+        run: cargo clippy --locked --features net,blk -- -D warnings
+      - name: clippy gpu
+        run: cargo clippy --locked --features gpu -- -D warnings
+      - name: test devices
+        run: cargo test --locked -p krun-devices --features net
+      - name: test libkrun
+        run: cargo test --locked -p libkrun --features net
